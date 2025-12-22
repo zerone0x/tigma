@@ -2,11 +2,13 @@
 
 A terminal-based design tool for creating ASCII diagrams and designs.
 
-## Installation
+## Running
 
 ```bash
-bun install
+bunx tigma
 ```
+
+Currently this requires [bun](http://bun.sh).
 
 ## Usage
 
