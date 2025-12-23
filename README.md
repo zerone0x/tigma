@@ -49,6 +49,7 @@ Switch between tools using keyboard shortcuts:
 - **Shift+Click** to add/remove objects from selection (multi-select)
 - **Click+Drag** to move selected objects
 - **Click on empty space** to deselect all
+- **Click+Drag on empty space** to box-select multiple items (hold Shift to add)
 
 #### Rectangle Resizing
 
@@ -127,7 +128,7 @@ Designs are saved as `.tigma` files in JSON format. The file stores:
 ## Features
 
 - **Layered rendering**: Objects stack based on z-index; newer objects appear on top by default
-- **Multi-selection**: Select multiple objects with Shift+Click
+- **Multi-selection**: Select multiple objects with Shift+Click or box-select
 - **Undo/Redo**: Up to 100 history snapshots
 - **Terminal responsive**: Adapts to terminal resize events
 - **Mouse support**: Full mouse interaction including hover highlighting

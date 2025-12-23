@@ -87,7 +87,7 @@ const TOOLS: Record<Tool, ToolInfo> = {
   move: { name: "Move", key: "M" },
   text: { name: "Text", key: "T" },
   rectangle: { name: "Rectangle", key: "R" },
-  line: { name: "Line", key: "L" },
+  line: { name: "Line", key: "L" }
 }
 
 type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | null
@@ -169,6 +169,9 @@ class CanvasApp {
   private currentFilePath: string | null = null
   private saveStatusMessage: string | null = null
   private saveStatusTimeout: number = 0
+
+  private isSelecting = false
+  private isSelectionPending = false
 
   // Save prompt state
   private showSavePrompt: boolean = false
@@ -757,6 +760,12 @@ class CanvasApp {
       if (event.x !== this.mouseDownX || event.y !== this.mouseDownY) {
         this.hasDragged = true
       }
+
+      if (this.isSelectionPending && this.hasDragged && this.currentTool === "move") {
+        this.isSelectionPending = false
+        this.isSelecting = true
+        this.isDraggingMouse = true
+      }
       
       if (this.isDraggingSelection) {
         // Move all selected items
@@ -771,7 +780,7 @@ class CanvasApp {
         if (rectId !== undefined) {
           this.resizeRect(rectId, event.x, event.y)
         }
-      } else if (this.isDrawingRect || this.isDrawingLine) {
+      } else if (this.isDrawingRect || this.isDrawingLine || this.isSelecting) {
         this.drawCursorX = Math.max(0, Math.min(this.gridWidth - 1, event.x))
         this.drawCursorY = Math.max(0, Math.min(this.gridHeight - 1, event.y))
         this.renderer.requestRender()
@@ -790,6 +799,11 @@ class CanvasApp {
         this.drawCursorX = Math.max(0, Math.min(this.gridWidth - 1, event.x))
         this.drawCursorY = Math.max(0, Math.min(this.gridHeight - 1, event.y))
         this.commitLine()
+      }
+      if (this.isSelecting) {
+        this.drawCursorX = Math.max(0, Math.min(this.gridWidth - 1, event.x))
+        this.drawCursorY = Math.max(0, Math.min(this.gridHeight - 1, event.y))
+        this.commitSelection() // 后面会实现这个方法
       }
       
       // If we clicked on a selected text box and didn't drag, enter edit mode (only for single selection)
@@ -812,6 +826,9 @@ class CanvasApp {
       this.isDraggingMouse = false
       this.clickedOnSelectedTextBox = false
       this.hasDragged = false
+      this.isSelecting = false
+      this.isSelectionPending = false
+
       return
     }
 
@@ -951,10 +968,15 @@ class CanvasApp {
           return
         }
 
-        // Clicking on empty space - clear selection (unless shift is held)
+        // Clicking on empty space - clear selection (unless shift is held) and prep box selection
         if (!shiftHeld) {
           this.clearSelection()
         }
+        this.isSelectionPending = true
+        this.drawStartX = event.x
+        this.drawStartY = event.y
+        this.drawCursorX = event.x
+        this.drawCursorY = event.y
         this.renderer.requestRender()
         return
       }
@@ -1375,6 +1397,47 @@ class CanvasApp {
     this.setTool("move")
   }
 
+  private commitSelection(): void {
+    if (!this.isSelecting) return
+
+    const selX1 = Math.min(this.drawStartX, this.drawCursorX)
+    const selX2 = Math.max(this.drawStartX, this.drawCursorX)
+    const selY1 = Math.min(this.drawStartY, this.drawCursorY)
+    const selY2 = Math.max(this.drawStartY, this.drawCursorY)
+
+    const isIntersecting = (x1: number, y1: number, x2: number, y2: number) => {
+      return !(x2 < selX1 || x1 > selX2 || y2 < selY1 || y1 > selY2)
+    }
+
+    for (const box of this.textBoxes) {
+      const width = Math.max(1, this.getTextLength(box))
+      const bx1 = box.x
+      const bx2 = box.x + width - 1
+      const by1 = box.y
+      const by2 = box.y
+      
+      if (isIntersecting(bx1, by1, bx2, by2)) {
+        this.selectTextBox(box.id, true)
+      }
+    }
+
+    for (const rect of this.rectangles) {
+      const { x1, y1, x2, y2 } = this.normalizeRect(rect)
+      if (isIntersecting(x1, y1, x2, y2)) {
+        this.selectRect(rect.id, true)
+      }
+    }
+
+    for (const line of this.lines) {
+      const { x1, y1, x2, y2 } = this.normalizeLine(line)
+      if (isIntersecting(x1, y1, x2, y2)) {
+        this.selectLine(line.id, true)
+      }
+    }
+
+    this.isSelecting = false
+  }
+
   private deleteLine(id: number): void {
     this.saveSnapshot()
     this.lines = this.lines.filter(l => l.id !== id)
@@ -1528,6 +1591,8 @@ class CanvasApp {
     
     this.isDrawingRect = false
     this.isDrawingLine = false
+    this.isSelecting = false
+    this.isSelectionPending = false
     this.isDraggingMouse = false
     this.currentTool = tool
     
@@ -1594,6 +1659,10 @@ class CanvasApp {
     if (this.isDrawingLine) {
       this.renderLinePreview(buffer)
     }
+    if (this.isSelecting) {
+      this.renderSelectionBoxPreview(buffer)
+    }
+
 
     // Draw active text box border and cursor - on top of everything
     if (this.activeTextBoxId !== null) {
@@ -1924,6 +1993,35 @@ class CanvasApp {
       const bg = this.readBufferBg(buffer, x, y)
       const char = this.getLineChar(this.drawStartX, this.drawStartY, this.drawCursorX, this.drawCursorY, i, points.length)
       buffer.setCell(x, y, char, fg, bg, attrs)
+    }
+  }
+
+  private renderSelectionBoxPreview(buffer: OptimizedBuffer): void {
+    const x1 = Math.min(this.drawStartX, this.drawCursorX)
+    const x2 = Math.max(this.drawStartX, this.drawCursorX)
+    const y1 = Math.min(this.drawStartY, this.drawCursorY)
+    const y2 = Math.max(this.drawStartY, this.drawCursorY)
+
+    const fg = this.toolbarActiveColor 
+
+    // 绘制边框
+    for (let y = y1; y <= y2; y++) {
+      for (let x = x1; x <= x2; x++) {
+        if (x < 0 || x >= this.gridWidth || y < 0 || y >= this.gridHeight) continue
+
+        let char = ""
+        if (y === y1 && x === x1) char = "+"
+        else if (y === y1 && x === x2) char = "+"
+        else if (y === y2 && x === x1) char = "+"
+        else if (y === y2 && x === x2) char = "+"
+        else if (y === y1 || y === y2) char = "-"
+        else if (x === x1 || x === x2) char = "│"
+
+        if (char) {
+          const currentBg = this.readBufferBg(buffer, x, y)
+          buffer.setCell(x, y, char, fg, currentBg, 0)
+        }
+      }
     }
   }
 
@@ -2272,7 +2370,7 @@ class CanvasApp {
     if (this.activeTextBoxId !== null) {
       modeText = "| Editing (Esc to finish)"
     } else if (this.currentTool === "move") {
-      modeText = "| Click to select, drag to move"
+      modeText = "| Click to select, drag to move, drag empty space to box-select"
     } else if (this.currentTool === "text") {
       modeText = "| Click to add/edit text"
     } else if (this.isDrawingRect || this.isDrawingLine) {
