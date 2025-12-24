@@ -54,6 +54,14 @@ interface Line {
   fillColor: EntityColor  // not used for lines, but keeping consistent
 }
 
+interface Freehand {
+  id: number
+  points: { x: number; y: number }[]
+  bold: boolean
+  zIndex: number
+  strokeColor: EntityColor
+}
+
 // Color palette for strokes (bright colors)
 const STROKE_PALETTE: (RGBA | null)[] = [
   null, // transparent
@@ -76,7 +84,7 @@ const FILL_PALETTE: (RGBA | null)[] = [
   RGBA.fromInts(80, 80, 30, 255),    // muted yellow
 ]
 
-type Tool = "move" | "text" | "rectangle" | "line"
+type Tool = "move" | "text" | "rectangle" | "line" | "freehand"
 
 interface ToolInfo {
   name: string
@@ -87,7 +95,8 @@ const TOOLS: Record<Tool, ToolInfo> = {
   move: { name: "Move", key: "M" },
   text: { name: "Text", key: "T" },
   rectangle: { name: "Rectangle", key: "R" },
-  line: { name: "Line", key: "L" }
+  line: { name: "Line", key: "L" },
+  freehand: { name: "Pencil", key: "P" }
 }
 
 type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | null
@@ -96,9 +105,11 @@ interface HistorySnapshot {
   textBoxes: TextBox[]
   rectangles: Rectangle[]
   lines: Line[]
+  freehands: Freehand[]
   nextTextBoxId: number
   nextRectId: number
   nextLineId: number
+  nextFreehandId: number
   nextZIndex: number
 }
 
@@ -108,9 +119,11 @@ interface TigmaFile {
   textBoxes: SerializedTextBox[]
   rectangles: SerializedRectangle[]
   lines: SerializedLine[]
+  freehands?: SerializedFreehand[]  // optional for backward compatibility
   nextTextBoxId: number
   nextRectId: number
   nextLineId: number
+  nextFreehandId?: number  // optional for backward compatibility
   nextZIndex: number
 }
 
@@ -162,6 +175,14 @@ interface SerializedLine {
   fillColor: SerializedColor | null
 }
 
+interface SerializedFreehand {
+  id: number
+  points: { x: number; y: number }[]
+  bold: boolean
+  zIndex: number
+  strokeColor: SerializedColor | null
+}
+
 class CanvasApp {
   private renderer: CliRenderer
   private boldMode = false
@@ -193,6 +214,10 @@ class CanvasApp {
   private lines: Line[] = []
   private nextLineId = 1
 
+  // Freehand layer
+  private freehands: Freehand[] = []
+  private nextFreehandId = 1
+
   // Z-index for layer ordering (higher = on top)
   private nextZIndex = 1
 
@@ -200,6 +225,8 @@ class CanvasApp {
   private currentTool: Tool = "move"
   private isDrawingRect = false
   private isDrawingLine = false
+  private isDrawingFreehand = false
+  private tempFreehandPoints: { x: number; y: number }[] = []
   private drawStartX = 0
   private drawStartY = 0
   private drawCursorX = 0
@@ -216,12 +243,14 @@ class CanvasApp {
   private hoveredTextBoxId: number | null = null
   private hoveredRectId: number | null = null
   private hoveredLineId: number | null = null
+  private hoveredFreehandId: number | null = null
 
   // Selection state (persists after clicking/dragging)
   // Using Sets to support multi-selection
   private selectedTextBoxIds: Set<number> = new Set()
   private selectedRectIds: Set<number> = new Set()
   private selectedLineIds: Set<number> = new Set()
+  private selectedFreehandIds: Set<number> = new Set()
 
   // Dragging state (for moving objects)
   private isDraggingSelection = false
@@ -335,9 +364,11 @@ class CanvasApp {
       textBoxes: this.cloneTextBoxes(this.textBoxes),
       rectangles: this.cloneRectangles(this.rectangles),
       lines: this.cloneLines(this.lines),
+      freehands: this.cloneFreehands(this.freehands),
       nextTextBoxId: this.nextTextBoxId,
       nextRectId: this.nextRectId,
       nextLineId: this.nextLineId,
+      nextFreehandId: this.nextFreehandId,
       nextZIndex: this.nextZIndex,
     }
     this.historyStack.push(snapshot)
@@ -359,6 +390,10 @@ class CanvasApp {
     return lines.map(l => ({ ...l }))
   }
 
+  private cloneFreehands(freehands: Freehand[]): Freehand[] {
+    return freehands.map(f => ({ ...f, points: f.points.map(p => ({ ...p })) }))
+  }
+
   private undo(): void {
     if (this.historyStack.length === 0) return
 
@@ -366,9 +401,11 @@ class CanvasApp {
       textBoxes: this.cloneTextBoxes(this.textBoxes),
       rectangles: this.cloneRectangles(this.rectangles),
       lines: this.cloneLines(this.lines),
+      freehands: this.cloneFreehands(this.freehands),
       nextTextBoxId: this.nextTextBoxId,
       nextRectId: this.nextRectId,
       nextLineId: this.nextLineId,
+      nextFreehandId: this.nextFreehandId,
       nextZIndex: this.nextZIndex,
     }
     this.redoStack.push(currentSnapshot)
@@ -377,14 +414,17 @@ class CanvasApp {
     this.textBoxes = snapshot.textBoxes
     this.rectangles = snapshot.rectangles
     this.lines = snapshot.lines
+    this.freehands = snapshot.freehands
     this.nextTextBoxId = snapshot.nextTextBoxId
     this.nextRectId = snapshot.nextRectId
     this.nextLineId = snapshot.nextLineId
+    this.nextFreehandId = snapshot.nextFreehandId
     this.nextZIndex = snapshot.nextZIndex
     this.activeTextBoxId = null
     this.hoveredTextBoxId = null
     this.hoveredRectId = null
     this.hoveredLineId = null
+    this.hoveredFreehandId = null
     this.clearSelection()
 
     this.renderer.requestRender()
@@ -397,9 +437,11 @@ class CanvasApp {
       textBoxes: this.cloneTextBoxes(this.textBoxes),
       rectangles: this.cloneRectangles(this.rectangles),
       lines: this.cloneLines(this.lines),
+      freehands: this.cloneFreehands(this.freehands),
       nextTextBoxId: this.nextTextBoxId,
       nextRectId: this.nextRectId,
       nextLineId: this.nextLineId,
+      nextFreehandId: this.nextFreehandId,
       nextZIndex: this.nextZIndex,
     }
     this.historyStack.push(currentSnapshot)
@@ -408,14 +450,17 @@ class CanvasApp {
     this.textBoxes = snapshot.textBoxes
     this.rectangles = snapshot.rectangles
     this.lines = snapshot.lines
+    this.freehands = snapshot.freehands
     this.nextTextBoxId = snapshot.nextTextBoxId
     this.nextRectId = snapshot.nextRectId
     this.nextLineId = snapshot.nextLineId
+    this.nextFreehandId = snapshot.nextFreehandId
     this.nextZIndex = snapshot.nextZIndex
     this.activeTextBoxId = null
     this.hoveredTextBoxId = null
     this.hoveredRectId = null
     this.hoveredLineId = null
+    this.hoveredFreehandId = null
     this.clearSelection()
 
     this.renderer.requestRender()
@@ -521,15 +566,37 @@ class CanvasApp {
     }
   }
 
+  private serializeFreehand(freehand: Freehand): SerializedFreehand {
+    return {
+      id: freehand.id,
+      points: freehand.points.map(p => ({ x: p.x, y: p.y })),
+      bold: freehand.bold,
+      zIndex: freehand.zIndex,
+      strokeColor: this.serializeColor(freehand.strokeColor),
+    }
+  }
+
+  private deserializeFreehand(freehand: SerializedFreehand): Freehand {
+    return {
+      id: freehand.id,
+      points: freehand.points.map(p => ({ x: p.x, y: p.y })),
+      bold: freehand.bold,
+      zIndex: freehand.zIndex,
+      strokeColor: this.deserializeColor(freehand.strokeColor),
+    }
+  }
+
   private toFileData(): TigmaFile {
     return {
       version: 1,
       textBoxes: this.textBoxes.map(b => this.serializeTextBox(b)),
       rectangles: this.rectangles.map(r => this.serializeRectangle(r)),
       lines: this.lines.map(l => this.serializeLine(l)),
+      freehands: this.freehands.map(f => this.serializeFreehand(f)),
       nextTextBoxId: this.nextTextBoxId,
       nextRectId: this.nextRectId,
       nextLineId: this.nextLineId,
+      nextFreehandId: this.nextFreehandId,
       nextZIndex: this.nextZIndex,
     }
   }
@@ -538,20 +605,23 @@ class CanvasApp {
     this.textBoxes = data.textBoxes.map(b => this.deserializeTextBox(b))
     this.rectangles = data.rectangles.map(r => this.deserializeRectangle(r))
     this.lines = data.lines.map(l => this.deserializeLine(l))
+    this.freehands = (data.freehands ?? []).map(f => this.deserializeFreehand(f))
     this.nextTextBoxId = data.nextTextBoxId
     this.nextRectId = data.nextRectId
     this.nextLineId = data.nextLineId
+    this.nextFreehandId = data.nextFreehandId ?? 1
     this.nextZIndex = data.nextZIndex
-    
+
     // Reset UI state
     this.activeTextBoxId = null
     this.hoveredTextBoxId = null
     this.hoveredRectId = null
     this.hoveredLineId = null
+    this.hoveredFreehandId = null
     this.clearSelection()
     this.historyStack = []
     this.redoStack = []
-    
+
     this.renderer.requestRender()
   }
 
@@ -653,19 +723,20 @@ class CanvasApp {
     this.selectedTextBoxIds.clear()
     this.selectedRectIds.clear()
     this.selectedLineIds.clear()
+    this.selectedFreehandIds.clear()
   }
 
   private hasSelection(): boolean {
-    return this.selectedTextBoxIds.size > 0 || this.selectedRectIds.size > 0 || this.selectedLineIds.size > 0
+    return this.selectedTextBoxIds.size > 0 || this.selectedRectIds.size > 0 || this.selectedLineIds.size > 0 || this.selectedFreehandIds.size > 0
   }
 
   private isMultiSelection(): boolean {
-    const total = this.selectedTextBoxIds.size + this.selectedRectIds.size + this.selectedLineIds.size
+    const total = this.selectedTextBoxIds.size + this.selectedRectIds.size + this.selectedLineIds.size + this.selectedFreehandIds.size
     return total > 1
   }
 
   private getTotalSelectionCount(): number {
-    return this.selectedTextBoxIds.size + this.selectedRectIds.size + this.selectedLineIds.size
+    return this.selectedTextBoxIds.size + this.selectedRectIds.size + this.selectedLineIds.size + this.selectedFreehandIds.size
   }
 
   private isTextBoxSelected(id: number): boolean {
@@ -678,6 +749,10 @@ class CanvasApp {
 
   private isLineSelected(id: number): boolean {
     return this.selectedLineIds.has(id)
+  }
+
+  private isFreehandSelected(id: number): boolean {
+    return this.selectedFreehandIds.has(id)
   }
 
   private selectTextBox(id: number, addToSelection: boolean): void {
@@ -699,6 +774,13 @@ class CanvasApp {
       this.clearSelection()
     }
     this.selectedLineIds.add(id)
+  }
+
+  private selectFreehand(id: number, addToSelection: boolean): void {
+    if (!addToSelection) {
+      this.clearSelection()
+    }
+    this.selectedFreehandIds.add(id)
   }
 
   private moveSelection(dx: number, dy: number): void {
@@ -728,6 +810,16 @@ class CanvasApp {
         line.y1 += dy
         line.x2 += dx
         line.y2 += dy
+      }
+    }
+    // Move all selected freehands
+    for (const id of this.selectedFreehandIds) {
+      const freehand = this.freehands.find(f => f.id === id)
+      if (freehand) {
+        for (const point of freehand.points) {
+          point.x += dx
+          point.y += dy
+        }
       }
     }
     this.renderer.requestRender()
@@ -784,6 +876,21 @@ class CanvasApp {
         this.drawCursorX = Math.max(0, Math.min(this.gridWidth - 1, event.x))
         this.drawCursorY = Math.max(0, Math.min(this.gridHeight - 1, event.y))
         this.renderer.requestRender()
+      } else if (this.isDrawingFreehand) {
+        const x = Math.max(0, Math.min(this.gridWidth - 1, event.x))
+        const y = Math.max(0, Math.min(this.gridHeight - 1, event.y))
+        const lastPoint = this.tempFreehandPoints[this.tempFreehandPoints.length - 1]
+        if (lastPoint && (lastPoint.x !== x || lastPoint.y !== y)) {
+          // Use Bresenham interpolation to fill gaps between sample points
+          const interpolated = this.getLinePoints(lastPoint.x, lastPoint.y, x, y)
+          // Skip the first point (it's the last point we already have)
+          for (let i = 1; i < interpolated.length; i++) {
+            this.tempFreehandPoints.push(interpolated[i]!)
+          }
+        } else if (!lastPoint) {
+          this.tempFreehandPoints.push({ x, y })
+        }
+        this.renderer.requestRender()
       }
       return
     }
@@ -799,6 +906,21 @@ class CanvasApp {
         this.drawCursorX = Math.max(0, Math.min(this.gridWidth - 1, event.x))
         this.drawCursorY = Math.max(0, Math.min(this.gridHeight - 1, event.y))
         this.commitLine()
+      }
+      if (this.isDrawingFreehand) {
+        const x = Math.max(0, Math.min(this.gridWidth - 1, event.x))
+        const y = Math.max(0, Math.min(this.gridHeight - 1, event.y))
+        const lastPoint = this.tempFreehandPoints[this.tempFreehandPoints.length - 1]
+        if (lastPoint && (lastPoint.x !== x || lastPoint.y !== y)) {
+          // Use Bresenham interpolation for the final segment
+          const interpolated = this.getLinePoints(lastPoint.x, lastPoint.y, x, y)
+          for (let i = 1; i < interpolated.length; i++) {
+            this.tempFreehandPoints.push(interpolated[i]!)
+          }
+        } else if (!lastPoint) {
+          this.tempFreehandPoints.push({ x, y })
+        }
+        this.commitFreehand()
       }
       if (this.isSelecting) {
         this.drawCursorX = Math.max(0, Math.min(this.gridWidth - 1, event.x))
@@ -945,7 +1067,7 @@ class CanvasApp {
         const clickedLine = this.getLineAt(event.x, event.y)
         if (clickedLine) {
           const alreadySelected = this.isLineSelected(clickedLine.id)
-          
+
           if (shiftHeld) {
             // Toggle selection
             if (alreadySelected) {
@@ -957,7 +1079,34 @@ class CanvasApp {
             // Regular click on unselected - select only this
             this.selectLine(clickedLine.id, false)
           }
-          
+
+          // Prepare for dragging all selected items
+          this.saveSnapshot()
+          this.isDraggingSelection = true
+          this.dragStartX = event.x
+          this.dragStartY = event.y
+          this.isDraggingMouse = true
+          this.renderer.requestRender()
+          return
+        }
+
+        // Check if clicking on a freehand
+        const clickedFreehand = this.getFreehandAt(event.x, event.y)
+        if (clickedFreehand) {
+          const alreadySelected = this.isFreehandSelected(clickedFreehand.id)
+
+          if (shiftHeld) {
+            // Toggle selection
+            if (alreadySelected) {
+              this.selectedFreehandIds.delete(clickedFreehand.id)
+            } else {
+              this.selectedFreehandIds.add(clickedFreehand.id)
+            }
+          } else if (!alreadySelected) {
+            // Regular click on unselected - select only this
+            this.selectFreehand(clickedFreehand.id, false)
+          }
+
           // Prepare for dragging all selected items
           this.saveSnapshot()
           this.isDraggingSelection = true
@@ -1027,6 +1176,11 @@ class CanvasApp {
         this.drawStartY = event.y
         this.drawCursorX = event.x
         this.drawCursorY = event.y
+      } else if (this.currentTool === "freehand") {
+        // Start drawing freehand
+        this.isDrawingFreehand = true
+        this.isDraggingMouse = true
+        this.tempFreehandPoints = [{ x: event.x, y: event.y }]
       }
 
       this.renderer.requestRender()
@@ -1037,14 +1191,16 @@ class CanvasApp {
     const oldHoveredTextBox = this.hoveredTextBoxId
     const oldHoveredRect = this.hoveredRectId
     const oldHoveredLine = this.hoveredLineId
+    const oldHoveredFreehand = this.hoveredFreehandId
 
     // Only show hover highlighting when move tool is active
     if (this.currentTool !== "move") {
       this.hoveredTextBoxId = null
       this.hoveredRectId = null
       this.hoveredLineId = null
+      this.hoveredFreehandId = null
     } else {
-      // If hovering over a selected rectangle's resize handle (single selection only), 
+      // If hovering over a selected rectangle's resize handle (single selection only),
       // keep that rect as hovered but don't show hover on other objects
       if (this.selectedRectIds.size === 1 && !this.isMultiSelection()) {
         const rectId = this.selectedRectIds.values().next().value
@@ -1054,8 +1210,9 @@ class CanvasApp {
             this.hoveredTextBoxId = null
             this.hoveredRectId = rectId  // Keep the rect hovered so handles show
             this.hoveredLineId = null
+            this.hoveredFreehandId = null
             // Re-render if hover state changed
-            if (oldHoveredTextBox !== null || oldHoveredRect !== rectId || oldHoveredLine !== null) {
+            if (oldHoveredTextBox !== null || oldHoveredRect !== rectId || oldHoveredLine !== null || oldHoveredFreehand !== null) {
               this.renderer.requestRender()
             }
             return
@@ -1067,11 +1224,12 @@ class CanvasApp {
       const textBox = this.getTextBoxAt(x, y)
       const rect = this.getRectangleAt(x, y)
       const line = this.getLineAt(x, y)
-      
+      const freehand = this.getFreehandAt(x, y)
+
       // Determine which object has the highest zIndex
       let highestZ = -1
-      let highestType: "text" | "rect" | "line" | null = null
-      
+      let highestType: "text" | "rect" | "line" | "freehand" | null = null
+
       if (textBox && textBox.zIndex > highestZ) {
         highestZ = textBox.zIndex
         highestType = "text"
@@ -1084,14 +1242,19 @@ class CanvasApp {
         highestZ = line.zIndex
         highestType = "line"
       }
-      
+      if (freehand && freehand.zIndex > highestZ) {
+        highestZ = freehand.zIndex
+        highestType = "freehand"
+      }
+
       this.hoveredTextBoxId = highestType === "text" ? textBox!.id : null
       this.hoveredRectId = highestType === "rect" ? rect!.id : null
       this.hoveredLineId = highestType === "line" ? line!.id : null
+      this.hoveredFreehandId = highestType === "freehand" ? freehand!.id : null
     }
 
     // Only re-render if hover state changed
-    if (this.hoveredTextBoxId !== oldHoveredTextBox || this.hoveredRectId !== oldHoveredRect || this.hoveredLineId !== oldHoveredLine) {
+    if (this.hoveredTextBoxId !== oldHoveredTextBox || this.hoveredRectId !== oldHoveredRect || this.hoveredLineId !== oldHoveredLine || this.hoveredFreehandId !== oldHoveredFreehand) {
       this.renderer.requestRender()
     }
   }
@@ -1435,6 +1598,13 @@ class CanvasApp {
       }
     }
 
+    for (const freehand of this.freehands) {
+      const bounds = this.getFreehandBounds(freehand)
+      if (isIntersecting(bounds.x1, bounds.y1, bounds.x2, bounds.y2)) {
+        this.selectFreehand(freehand.id, true)
+      }
+    }
+
     this.isSelecting = false
   }
 
@@ -1447,9 +1617,77 @@ class CanvasApp {
     this.renderer.requestRender()
   }
 
+  // ==================== Freehand Operations ====================
+
+  private getFreehandAt(x: number, y: number): Freehand | null {
+    let found: Freehand | null = null
+    for (const freehand of this.freehands) {
+      if (this.isOnFreehand(x, y, freehand)) {
+        if (!found || freehand.zIndex > found.zIndex) {
+          found = freehand
+        }
+      }
+    }
+    return found
+  }
+
+  private isOnFreehand(x: number, y: number, freehand: Freehand): boolean {
+    return freehand.points.some(p => p.x === x && p.y === y)
+  }
+
+  private getFreehandBounds(freehand: Freehand): { x1: number; y1: number; x2: number; y2: number } {
+    if (freehand.points.length === 0) {
+      return { x1: 0, y1: 0, x2: 0, y2: 0 }
+    }
+    let minX = freehand.points[0]!.x
+    let maxX = freehand.points[0]!.x
+    let minY = freehand.points[0]!.y
+    let maxY = freehand.points[0]!.y
+    for (const p of freehand.points) {
+      if (p.x < minX) minX = p.x
+      if (p.x > maxX) maxX = p.x
+      if (p.y < minY) minY = p.y
+      if (p.y > maxY) maxY = p.y
+    }
+    return { x1: minX, y1: minY, x2: maxX, y2: maxY }
+  }
+
+  private commitFreehand(): void {
+    if (!this.isDrawingFreehand) return
+
+    // Only create freehand if it has at least 2 points
+    if (this.tempFreehandPoints.length >= 2) {
+      this.saveSnapshot()
+      const freehand: Freehand = {
+        id: this.nextFreehandId++,
+        points: [...this.tempFreehandPoints],
+        bold: this.boldMode,
+        zIndex: this.nextZIndex++,
+        strokeColor: this.currentStrokeColor,
+      }
+      this.freehands.push(freehand)
+      // Select the newly created freehand
+      this.selectFreehand(freehand.id, false)
+    }
+
+    this.isDrawingFreehand = false
+    this.tempFreehandPoints = []
+    // Switch back to Move tool after drawing
+    this.setTool("move")
+  }
+
+  private deleteFreehand(id: number): void {
+    this.saveSnapshot()
+    this.freehands = this.freehands.filter(f => f.id !== id)
+    if (this.hoveredFreehandId === id) {
+      this.hoveredFreehandId = null
+    }
+    this.renderer.requestRender()
+  }
+
   // ==================== Layer Management ====================
 
-  private getSelectedObject(): { type: "text" | "rect" | "line"; zIndex: number; id: number } | null {
+  private getSelectedObject(): { type: "text" | "rect" | "line" | "freehand"; zIndex: number; id: number } | null {
     // Only return a single selected object (for layer reordering - only works with single selection)
     if (this.selectedTextBoxIds.size === 1) {
       const id = this.selectedTextBoxIds.values().next().value
@@ -1466,6 +1704,11 @@ class CanvasApp {
       const line = this.lines.find(l => l.id === id)
       if (line) return { type: "line", zIndex: line.zIndex, id: line.id }
     }
+    if (this.selectedFreehandIds.size === 1) {
+      const id = this.selectedFreehandIds.values().next().value
+      const freehand = this.freehands.find(f => f.id === id)
+      if (freehand) return { type: "freehand", zIndex: freehand.zIndex, id: freehand.id }
+    }
     return null
   }
 
@@ -1474,6 +1717,7 @@ class CanvasApp {
     for (const box of this.textBoxes) indices.push(box.zIndex)
     for (const rect of this.rectangles) indices.push(rect.zIndex)
     for (const line of this.lines) indices.push(line.zIndex)
+    for (const freehand of this.freehands) indices.push(freehand.zIndex)
     return indices.sort((a, b) => a - b)
   }
 
@@ -1511,7 +1755,13 @@ class CanvasApp {
         break
       }
     }
-    
+    for (const freehand of this.freehands) {
+      if (freehand.zIndex === lowerZ) {
+        freehand.zIndex = selected.zIndex
+        break
+      }
+    }
+
     // Give the selected object the lower zIndex
     if (selected.type === "text") {
       const box = this.textBoxes.find(b => b.id === selected.id)
@@ -1522,8 +1772,11 @@ class CanvasApp {
     } else if (selected.type === "line") {
       const line = this.lines.find(l => l.id === selected.id)
       if (line) line.zIndex = lowerZ
+    } else if (selected.type === "freehand") {
+      const freehand = this.freehands.find(f => f.id === selected.id)
+      if (freehand) freehand.zIndex = lowerZ
     }
-    
+
     this.renderer.requestRender()
   }
 
@@ -1561,7 +1814,13 @@ class CanvasApp {
         break
       }
     }
-    
+    for (const freehand of this.freehands) {
+      if (freehand.zIndex === higherZ) {
+        freehand.zIndex = selected.zIndex
+        break
+      }
+    }
+
     // Give the selected object the higher zIndex
     if (selected.type === "text") {
       const box = this.textBoxes.find(b => b.id === selected.id)
@@ -1572,8 +1831,11 @@ class CanvasApp {
     } else if (selected.type === "line") {
       const line = this.lines.find(l => l.id === selected.id)
       if (line) line.zIndex = higherZ
+    } else if (selected.type === "freehand") {
+      const freehand = this.freehands.find(f => f.id === selected.id)
+      if (freehand) freehand.zIndex = higherZ
     }
-    
+
     this.renderer.requestRender()
   }
 
@@ -1588,9 +1850,11 @@ class CanvasApp {
     if (this.activeTextBoxId !== null) {
       this.commitActiveTextBox()
     }
-    
+
     this.isDrawingRect = false
     this.isDrawingLine = false
+    this.isDrawingFreehand = false
+    this.tempFreehandPoints = []
     this.isSelecting = false
     this.isSelectionPending = false
     this.isDraggingMouse = false
@@ -1621,17 +1885,19 @@ class CanvasApp {
     }
 
     // Collect all objects with their zIndex for proper layering
-    type RenderItem = 
+    type RenderItem =
       | { type: "text"; obj: TextBox }
       | { type: "rect"; obj: Rectangle }
       | { type: "line"; obj: Line }
-    
+      | { type: "freehand"; obj: Freehand }
+
     const items: RenderItem[] = [
       ...this.textBoxes.map(obj => ({ type: "text" as const, obj })),
       ...this.rectangles.map(obj => ({ type: "rect" as const, obj })),
       ...this.lines.map(obj => ({ type: "line" as const, obj })),
+      ...this.freehands.map(obj => ({ type: "freehand" as const, obj })),
     ]
-    
+
     // Sort by zIndex (lower first, so higher zIndex renders on top)
     items.sort((a, b) => a.obj.zIndex - b.obj.zIndex)
 
@@ -1649,6 +1915,10 @@ class CanvasApp {
         const isSelected = this.isLineSelected(item.obj.id)
         const isHovered = item.obj.id === this.hoveredLineId && !isSelected
         this.renderLine(buffer, item.obj, isHovered, false)
+      } else if (item.type === "freehand") {
+        const isSelected = this.isFreehandSelected(item.obj.id)
+        const isHovered = item.obj.id === this.hoveredFreehandId && !isSelected
+        this.renderFreehand(buffer, item.obj, isHovered, false)
       }
     }
 
@@ -1658,6 +1928,9 @@ class CanvasApp {
     }
     if (this.isDrawingLine) {
       this.renderLinePreview(buffer)
+    }
+    if (this.isDrawingFreehand) {
+      this.renderFreehandPreview(buffer)
     }
     if (this.isSelecting) {
       this.renderSelectionBoxPreview(buffer)
@@ -1696,6 +1969,12 @@ class CanvasApp {
       const selectedLine = this.lines.find(l => l.id === id)
       if (selectedLine) {
         this.renderLineSelectionHighlight(buffer, selectedLine)
+      }
+    }
+    for (const id of this.selectedFreehandIds) {
+      const selectedFreehand = this.freehands.find(f => f.id === id)
+      if (selectedFreehand) {
+        this.renderFreehandSelectionHighlight(buffer, selectedFreehand)
       }
     }
 
@@ -1984,7 +2263,7 @@ class CanvasApp {
     const attrs = this.boldMode ? TextAttributes.BOLD : 0
 
     const points = this.getLinePoints(this.drawStartX, this.drawStartY, this.drawCursorX, this.drawCursorY)
-    
+
     for (let i = 0; i < points.length; i++) {
       const { x, y } = points[i]!
       if (x < 0 || x >= this.gridWidth || y < 0 || y >= this.gridHeight) continue
@@ -1993,6 +2272,76 @@ class CanvasApp {
       const bg = this.readBufferBg(buffer, x, y)
       const char = this.getLineChar(this.drawStartX, this.drawStartY, this.drawCursorX, this.drawCursorY, i, points.length)
       buffer.setCell(x, y, char, fg, bg, attrs)
+    }
+  }
+
+  private renderFreehand(buffer: OptimizedBuffer, freehand: Freehand, isHovered: boolean, _isSelected: boolean): void {
+    const strokeColor = freehand.strokeColor ?? this.textColor
+    const attrs = freehand.bold ? TextAttributes.BOLD : 0
+
+    for (let i = 0; i < freehand.points.length; i++) {
+      const point = freehand.points[i]!
+      if (point.x < 0 || point.x >= this.gridWidth || point.y < 0 || point.y >= this.gridHeight) continue
+
+      let bg = this.readBufferBg(buffer, point.x, point.y)
+      if (isHovered) {
+        bg = this.hoverColor
+      }
+
+      const char = this.getFreehandChar(freehand.points, i)
+      buffer.setCell(point.x, point.y, char, strokeColor, bg, attrs)
+    }
+  }
+
+  private renderFreehandPreview(buffer: OptimizedBuffer): void {
+    const fg = this.currentStrokeColor ?? this.textColor
+    const attrs = this.boldMode ? TextAttributes.BOLD : 0
+
+    for (let i = 0; i < this.tempFreehandPoints.length; i++) {
+      const point = this.tempFreehandPoints[i]!
+      if (point.x < 0 || point.x >= this.gridWidth || point.y < 0 || point.y >= this.gridHeight) continue
+
+      const bg = this.readBufferBg(buffer, point.x, point.y)
+      const char = this.getFreehandChar(this.tempFreehandPoints, i)
+      buffer.setCell(point.x, point.y, char, fg, bg, attrs)
+    }
+  }
+
+  private getFreehandChar(points: { x: number; y: number }[], index: number): string {
+    if (points.length <= 1) return "•"
+
+    const curr = points[index]!
+    const prev = index > 0 ? points[index - 1] : null
+    const next = index < points.length - 1 ? points[index + 1] : null
+
+    // Determine direction from neighbors
+    let dx = 0, dy = 0
+    if (prev && next) {
+      dx = next.x - prev.x
+      dy = next.y - prev.y
+    } else if (next) {
+      dx = next.x - curr.x
+      dy = next.y - curr.y
+    } else if (prev) {
+      dx = curr.x - prev.x
+      dy = curr.y - prev.y
+    }
+
+    // Choose character based on direction
+    if (dx === 0 && dy === 0) return "•"
+    if (Math.abs(dx) > Math.abs(dy)) {
+      // Horizontal dominant
+      return "─"
+    } else if (Math.abs(dy) > Math.abs(dx)) {
+      // Vertical dominant
+      return "│"
+    } else {
+      // Diagonal
+      if ((dx > 0 && dy > 0) || (dx < 0 && dy < 0)) {
+        return "╲"
+      } else {
+        return "╱"
+      }
     }
   }
 
@@ -2151,8 +2500,20 @@ class CanvasApp {
 
   private renderLineSelectionHighlight(buffer: OptimizedBuffer, line: Line): void {
     const points = this.getLinePoints(line.x1, line.y1, line.x2, line.y2)
-    
+
     for (const { x, y } of points) {
+      if (x < 0 || x >= this.gridWidth || y < 0 || y >= this.gridHeight) continue
+
+      const char = this.readBufferChar(buffer, x, y)
+      const fg = this.readBufferFg(buffer, x, y)
+      const attrs = this.readBufferAttrs(buffer, x, y)
+      const bg = this.getSelectionBg(x, y)
+      buffer.setCell(x, y, char, fg, bg, attrs)
+    }
+  }
+
+  private renderFreehandSelectionHighlight(buffer: OptimizedBuffer, freehand: Freehand): void {
+    for (const { x, y } of freehand.points) {
       if (x < 0 || x >= this.gridWidth || y < 0 || y >= this.gridHeight) continue
 
       const char = this.readBufferChar(buffer, x, y)
@@ -2188,6 +2549,12 @@ class CanvasApp {
       const line = this.lines.find(l => l.id === id)
       if (line) {
         line.strokeColor = this.currentStrokeColor
+      }
+    }
+    for (const id of this.selectedFreehandIds) {
+      const freehand = this.freehands.find(f => f.id === id)
+      if (freehand) {
+        freehand.strokeColor = this.currentStrokeColor
       }
     }
   }
@@ -2453,6 +2820,10 @@ class CanvasApp {
           this.setTool("line")
           return
         }
+        if (key.sequence === "p" || key.sequence === "P") {
+          this.setTool("freehand")
+          return
+        }
       }
 
       // Save file
@@ -2491,6 +2862,10 @@ class CanvasApp {
         } else if (this.isDrawingLine) {
           this.isDrawingLine = false
           this.renderer.requestRender()
+        } else if (this.isDrawingFreehand) {
+          this.isDrawingFreehand = false
+          this.tempFreehandPoints = []
+          this.renderer.requestRender()
         }
         return
       }
@@ -2510,6 +2885,9 @@ class CanvasApp {
           for (const id of this.selectedLineIds) {
             this.lines = this.lines.filter(l => l.id !== id)
           }
+          for (const id of this.selectedFreehandIds) {
+            this.freehands = this.freehands.filter(f => f.id !== id)
+          }
           this.clearSelection()
           this.renderer.requestRender()
           return
@@ -2525,6 +2903,10 @@ class CanvasApp {
         }
         if (this.hoveredLineId !== null) {
           this.deleteLine(this.hoveredLineId)
+          return
+        }
+        if (this.hoveredFreehandId !== null) {
+          this.deleteFreehand(this.hoveredFreehandId)
           return
         }
       }

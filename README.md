@@ -30,6 +30,7 @@ Switch between tools using keyboard shortcuts:
 | `T` | Text | Create and edit text boxes |
 | `R` | Rectangle | Draw rectangular shapes with box-drawing characters |
 | `L` | Line | Draw lines (horizontal, vertical, or diagonal) |
+| `P` | Freehand | Draw freehand curves with pencil |
 
 ## Controls
 
@@ -91,6 +92,13 @@ Drag the handles to resize the rectangle.
 - Uses Bresenham's algorithm for diagonal rendering
 - Line uses current stroke color
 
+### Freehand Tool
+
+- **Click+Drag** to draw freehand curves
+- Uses Bresenham interpolation for smooth, continuous strokes
+- Renders with directional box-drawing characters (─, │, ╲, ╱)
+- Freehand uses current stroke color
+
 ## Colors
 
 A color picker is displayed at the bottom-right of the canvas.
@@ -123,6 +131,7 @@ Designs are saved as `.tigma` files in JSON format. The file stores:
 - Text boxes with per-character styling (bold, color)
 - Rectangles with position, stroke color, fill color, and bold state
 - Lines with position, stroke color, and bold state
+- Freehand curves with point arrays and stroke color
 - Z-index ordering for proper layering
 
 ## Features
